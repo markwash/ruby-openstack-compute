@@ -1,3 +1,5 @@
+require 'time'
+
 module OpenStack
 module Compute
   class Connection
@@ -46,6 +48,7 @@ module Compute
       @service_type = options[:service_type] || "compute"
       @region = options[:region] || @region = nil
       @is_debug = options[:is_debug]
+      @rate_limit_retries = options.fetch(:rate_limit_retries, 0)
 
       auth_uri=nil
       begin
@@ -81,12 +84,21 @@ module Compute
       start_http(server,path,port,scheme,hdrhash)
       request = Net::HTTP.const_get(method.to_s.capitalize).new(path,hdrhash)
       request.body = data
-      response = @http[server].request(request)
-      if @is_debug
-          puts "REQUEST: #{method} => #{path}"
-          puts data if data
-          puts "RESPONSE: #{response.body}"
-          puts '----------------------------------------'
+      for i in (0..@rate_limit_retries)
+        response = @http[server].request(request)
+        if @is_debug
+            puts "REQUEST: #{method} => #{path}"
+            puts data if data
+            puts "RESPONSE: #{response.code} => #{response.body}"
+            puts '----------------------------------------'
+        end
+        if response.code != '413' or not (response.body.nil? or response.body.empty?)
+          break
+        end
+        time_to_sleep = i * (Time.httpdate(response['Retry-After']) - Time.now)
+        time_to_sleep = 1 if time_to_sleep < 1
+        puts "Sleeping %0.2f seconds" % time_to_sleep if @is_debug
+        sleep time_to_sleep
       end
       raise OpenStack::Compute::Exception::ExpiredAuthToken if response.code == "401"
       response
